@@ -73,7 +73,7 @@ func (r *Runtime) Squash(ctx context.Context, opt Option) error {
 	if err != nil {
 		return err
 	}
-	defer r.cleanupSnapshot(ctx, snapshotKey)
+	// defer r.cleanupSnapshot(ctx, snapshotKey)
 	// apply layers to snapshot
 	if err := r.applyLayersToSnapshot(ctx, mount, sLayers); err != nil {
 		return err
@@ -83,15 +83,15 @@ func (r *Runtime) Squash(ctx context.Context, opt Option) error {
 	if err != nil {
 		return fmt.Errorf("failed to export layer: %w", err)
 	}
-	// generate remaining image config
+	// generate remaining base image config
 	baseImage, err := r.generateBaseImageConfig(ctx, image, remainingLayerCount)
 	if err != nil {
 		return err
 	}
 	// commit snapshot
-	rootfsID := identity.ChainID(append(baseImage.RootFS.DiffIDs, diffID)).String()
+	snapshotID := identity.ChainID(append(baseImage.RootFS.DiffIDs, diffID)).String()
 	// todo add error handling
-	r.commitSnapshot(ctx, rootfsID, snapshotKey)
+	r.commitSnapshot(ctx, snapshotID, snapshotKey)
 	// generate squash image
 	newImage, err := r.generateSquashImage(ctx, opt, baseImage, image.Manifest.Layers[:remainingLayerCount], diffLayerDesc, diffID)
 	if err != nil {
@@ -185,7 +185,6 @@ func (r *Runtime) createDiff(ctx context.Context, snapshotName string) (ocispec.
 	if err != nil {
 		return ocispec.Descriptor{}, digest.Digest(""), err
 	}
-	// todo add platform
 	return ocispec.Descriptor{
 		MediaType: images.MediaTypeDockerSchema2LayerGzip,
 		Digest:    newDesc.Digest,
@@ -195,14 +194,14 @@ func (r *Runtime) createDiff(ctx context.Context, snapshotName string) (ocispec.
 
 func (r *Runtime) generateBaseImageConfig(ctx context.Context, image *Image, remainingLayerCount int) (ocispec.Image, error) {
 	// generate squash image config
-	baseConfig, _, err := imgutil.ReadImageConfig(ctx, image.ClientImage) // aware of img.platform
+	orginalConfig, _, err := imgutil.ReadImageConfig(ctx, image.ClientImage) // aware of img.platform
 	if err != nil {
 		return ocispec.Image{}, err
 	}
 
 	var history []ocispec.History
 	var count int
-	for _, h := range baseConfig.History {
+	for _, h := range orginalConfig.History {
 		// if empty layer, add to history, be careful with the last layer that is empty
 		if h.EmptyLayer {
 			history = append(history, h)
@@ -219,12 +218,12 @@ func (r *Runtime) generateBaseImageConfig(ctx context.Context, image *Image, rem
 	cTime := time.Now()
 	return ocispec.Image{
 		Created:  &cTime,
-		Author:   baseConfig.Author,
-		Platform: baseConfig.Platform,
-		Config:   baseConfig.Config,
+		Author:   orginalConfig.Author,
+		Platform: orginalConfig.Platform,
+		Config:   orginalConfig.Config,
 		RootFS: ocispec.RootFS{
-			Type:    baseConfig.RootFS.Type,
-			DiffIDs: baseConfig.RootFS.DiffIDs[:remainingLayerCount],
+			Type:    orginalConfig.RootFS.Type,
+			DiffIDs: orginalConfig.RootFS.DiffIDs[:remainingLayerCount],
 		},
 		History: history,
 	}, nil
@@ -245,14 +244,20 @@ func (r *Runtime) generateSquashImage(ctx context.Context, opt Option, baseImage
 		return nil, err
 	}
 	configDesc := ocispec.Descriptor{
-		MediaType: images.MediaTypeDockerSchema2Config,
-		Digest:    digest.FromBytes(newConfigJSON),
-		Size:      int64(len(newConfigJSON)),
-		Platform:  &baseImageConfig.Platform,
+		MediaType:    images.MediaTypeDockerSchema2Config,
+		Digest:       digest.FromBytes(newConfigJSON),
+		Size:         int64(len(newConfigJSON)),
+		Platform:     &baseImageConfig.Platform,
+		ArtifactType: baseImageConfig.Architecture,
 	}
-	layers := append(baseImageLayers, diffLayerDesc)
+
+	err = content.WriteBlob(ctx, r.contentstore, configDesc.Digest.String(), bytes.NewReader(newConfigJSON), configDesc)
+	if err != nil {
+		return nil, err
+	}
 
 	// generate new manifest, manifest json, manifest descriptor
+	layers := append(baseImageLayers, diffLayerDesc)
 	newMfst := struct {
 		MediaType string `json:"mediaType,omitempty"`
 		ocispec.Manifest

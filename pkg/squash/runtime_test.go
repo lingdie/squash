@@ -21,12 +21,12 @@ func TestRuntime_Squash(t *testing.T) {
 		fmt.Println(err)
 		return
 	}
-	opt := squash.Option{
-		SourceImageRef:   "docker.io/library/nginx:dev",
-		TargetImageName:  "docker.io/library/nginx:dev-slim",
-		SquashLayerCount: 3,
+	opt1 := squash.Option{
+		SourceImageRef:   "docker.io/lingdie/nginx:dev",
+		TargetImageName:  "docker.io/lingdie/nginx:dev-slim",
+		SquashLayerCount: 4,
 	}
-	if err := r.Squash(ctx, opt); err != nil {
+	if err := r.Squash(ctx, opt1); err != nil {
 		fmt.Println(err)
 		return
 	}
